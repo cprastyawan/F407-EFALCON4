@@ -71,6 +71,7 @@ UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* Definitions for IMU_Task */
 osThreadId_t IMU_TaskHandle;
@@ -109,6 +110,7 @@ FusionEulerAngles eulerAnglesRef;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SDIO_MMC_Init(void);
 static void MX_SPI1_Init(void);
@@ -192,8 +194,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
-  MX_SDIO_MMC_Init();
+  //MX_SDIO_MMC_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
   MX_TIM1_Init();
@@ -280,10 +283,6 @@ int main(void)
   //while(1);
 
   FusionAhrsInitialise(&fusionahrs, 0.2);
-
-  HAL_TIM_Base_Start_IT(&htim6);
-  HAL_TIM_Base_Start(&htim2);
-  HAL_TIM_IC_Start_IT(&htim12, TIM_CHANNEL_1);
 
 
   //MPU9250_begin();
@@ -1274,6 +1273,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -1380,6 +1395,9 @@ void Start_IMU_Task(void *argument)
 {
   /* USER CODE BEGIN 5 */
 	static uint32_t curTick;
+	  HAL_TIM_Base_Start_IT(&htim6);
+	  HAL_TIM_Base_Start(&htim2);
+	  HAL_TIM_IC_Start_IT(&htim12, TIM_CHANNEL_1);
   /* Infinite loop */
   for(;;)
   {
@@ -1454,15 +1472,15 @@ void Start_IMU_Task(void *argument)
 		  FusionAhrsUpdate(&fusionahrs, gyro, accel,  magnet, delta);
 		  eulerAngles = FusionQuaternionToEulerAngles(FusionAhrsGetQuaternion(&fusionahrs));
 
-		  //strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
-		  //HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+		  strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
+		  HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
 	  }
 
-	  if(updateRemote){
+	  /*if(updateRemote){
 		  updateRemote = false;
 		  strSize = sprintf((char*)strBuffer, "CH1: %d\tCH2: %d\tCH3: %d\tCH4: %d\tCH5: %d\tCH6: %d\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
-		  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-	  }
+		  //HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
+	  }*/
     osDelay(1);
   }
   /* USER CODE END 5 */
