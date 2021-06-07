@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -71,6 +72,13 @@ UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
+/* Definitions for IMU_Task */
+osThreadId_t IMU_TaskHandle;
+const osThreadAttr_t IMU_Task_attributes = {
+  .name = "IMU_Task",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityRealtime,
+};
 /* USER CODE BEGIN PV */
 uint8_t strBuffer[512];
 uint16_t strSize = 0;
@@ -120,6 +128,8 @@ static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM12_Init(void);
+void Start_IMU_Task(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -183,7 +193,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
-  //MX_SDIO_MMC_Init();
+  MX_SDIO_MMC_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
   MX_TIM1_Init();
@@ -321,92 +331,46 @@ int main(void)
   }*/
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of IMU_Task */
+  IMU_TaskHandle = osThreadNew(Start_IMU_Task, NULL, &IMU_Task_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  static uint32_t curTick;
 
-	  if(HAL_GetTick() - curTick > 1000){
-		  curTick = HAL_GetTick();
-
-		  /*strSize = sprintf((char*)strBuffer, "accX: %f\taccY: %f\taccZ: %f\r\n", accX, accY, accZ);
-		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-
-		  strSize = sprintf((char*)strBuffer, "gyrX: %f\tgyrY: %f\tgyrZ: %f\r\n", gyrX, gyrY, gyrZ);
-		  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-
-		 strSize = sprintf((char*)strBuffer, "magX: %f\tmagY: %f\tmagZ: %f\r\n\r\n", magX, magY, magZ);
-		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-
-		 strSize = sprintf((char*)strBuffer, "Roll: %f\tPitch: %f\tYaw: %f\r\n", euler.roll, euler.pitch, euler.yaw);
-		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-
-		 strSize = sprintf((char*)strBuffer, "Frame Rate Frequency: %f\r\n", IMURateFreq);
-		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);*/
-
-	  }
-
-	  if(updateIMU){
-		  updateIMU = false;
-
-		  accX = MPU9250_getAccelX_g(&mpu9250);
-		  accY = MPU9250_getAccelY_g(&mpu9250);
-		  accZ = MPU9250_getAccelZ_g(&mpu9250);
-
-		  //gyrX = MPU9250_getGyroX_rads(&mpu9250);
-		  //gyrY = MPU9250_getGyroY_rads(&mpu9250);
-		  //gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
-
-		  gyrX = MPU9250_getGyroX_rads(&mpu9250);
-		  gyrY = MPU9250_getGyroY_rads(&mpu9250);
-		  gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
-
-		  magX = MPU9250_getMagX_uT(&mpu9250);
-		  magY = MPU9250_getMagY_uT(&mpu9250);
-		  magZ = MPU9250_getMagZ_uT(&mpu9250);
-
-		  /*MadgwickQuaternionUpdate(accX, accY, accZ, gyrX, gyrY, gyrZ, magX, magY, magZ, (float)delta);
-		  getQ(quaternion);
-
-	      eulerAngles.angle.yaw   = atan2(2.0f * (*(quaternion+1) * *(quaternion+2) + *quaternion
-	                    * *(quaternion+3)), *quaternion * *quaternion + *(quaternion+1)
-	                    * *(quaternion+1) - *(quaternion+2) * *(quaternion+2) - *(quaternion+3)
-	                    * *(quaternion+3));
-	      eulerAngles.angle.pitch = -asin(2.0f * (*(quaternion+1) * *(quaternion+3) - *quaternion
-	                    * *(quaternion+2)));
-	      eulerAngles.angle.roll  = atan2(2.0f * (*quaternion * *(quaternion+1) + *(quaternion+2)
-	                    * *(quaternion+3)), *quaternion * *quaternion - *(quaternion+1)
-	                    * *(quaternion+1) - *(quaternion+2) * *(quaternion+2) + *(quaternion+3)
-	                    * *(quaternion+3));
-	      eulerAngles.angle.pitch *= RAD_TO_DEG;
-	      eulerAngles.angle.yaw   *= RAD_TO_DEG;
-	      //euler.yaw  -= 8.5;
-	      eulerAngles.angle.yaw -= 0.81;
-	      eulerAngles.angle.roll *= RAD_TO_DEG;*/
-		  accel.axis.x = accX;
-		  accel.axis.y = accY;
-		  accel.axis.z = accZ;
-
-		  gyro.axis.x = gyrX * RAD_TO_DEG;
-		  gyro.axis.y = gyrY * RAD_TO_DEG;
-		  gyro.axis.z = gyrZ * RAD_TO_DEG;
-
-		  magnet.axis.x = magX;
-		  magnet.axis.y = magY;
-		  magnet.axis.z = magZ;
-
-		  FusionAhrsUpdate(&fusionahrs, gyro, accel,  magnet, delta);
-		  eulerAngles = FusionQuaternionToEulerAngles(FusionAhrsGetQuaternion(&fusionahrs));
-
-	      //strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
-	      //HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-	  }
-	  if(updateRemote){
-		  updateRemote = false;
-		  strSize = sprintf((char*)strBuffer, "CH1: %d\tCH2: %d\tCH3: %d\tCH4: %d\tCH5: %d\tCH6: %d\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
-		  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
-	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1386,21 +1350,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-	static uint32_t cntNow;
-	static uint32_t cntPrev;
-	if(htim->Instance == TIM6){
-		if(MPU9250_getDrdyStatus(&mpu9250)){
-			MPU9250_readSensor(&mpu9250);
-			cntPrev = cntNow;
-			cntNow = __HAL_TIM_GET_COUNTER(&htim2);
-			delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
-			IMURateFreq = (1.0f / delta);
-			updateIMU = true;
-		}
-	}
-}
-
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance == TIM12){
 		static uint8_t PPMCount;
@@ -1419,6 +1368,136 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_Start_IMU_Task */
+/**
+  * @brief  Function implementing the IMU_Task thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_Start_IMU_Task */
+void Start_IMU_Task(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+	static uint32_t curTick;
+  /* Infinite loop */
+  for(;;)
+  {
+	  if(osKernelGetTickCount() - curTick > 1000){
+		  curTick = osKernelGetTickCount();
+
+		  /*strSize = sprintf((char*)strBuffer, "accX: %f\taccY: %f\taccZ: %f\r\n", accX, accY, accZ);
+		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+
+		  strSize = sprintf((char*)strBuffer, "gyrX: %f\tgyrY: %f\tgyrZ: %f\r\n", gyrX, gyrY, gyrZ);
+		  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+
+		 strSize = sprintf((char*)strBuffer, "magX: %f\tmagY: %f\tmagZ: %f\r\n\r\n", magX, magY, magZ);
+		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+
+		 strSize = sprintf((char*)strBuffer, "Roll: %f\tPitch: %f\tYaw: %f\r\n", euler.roll, euler.pitch, euler.yaw);
+		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+
+		 strSize = sprintf((char*)strBuffer, "Frame Rate Frequency: %f\r\n", IMURateFreq);
+		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);*/
+	  }
+
+	  if(updateIMU){
+		  updateIMU = false;
+
+		  accX = MPU9250_getAccelX_g(&mpu9250);
+		  accY = MPU9250_getAccelY_g(&mpu9250);
+		  accZ = MPU9250_getAccelZ_g(&mpu9250);
+
+		  //gyrX = MPU9250_getGyroX_rads(&mpu9250);
+		  //gyrY = MPU9250_getGyroY_rads(&mpu9250);
+		  //gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
+
+		  gyrX = MPU9250_getGyroX_rads(&mpu9250);
+		  gyrY = MPU9250_getGyroY_rads(&mpu9250);
+		  gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
+
+		  magX = MPU9250_getMagX_uT(&mpu9250);
+		  magY = MPU9250_getMagY_uT(&mpu9250);
+		  magZ = MPU9250_getMagZ_uT(&mpu9250);
+
+		  /*MadgwickQuaternionUpdate(accX, accY, accZ, gyrX, gyrY, gyrZ, magX, magY, magZ, (float)delta);
+		  getQ(quaternion);
+
+		  eulerAngles.angle.yaw   = atan2(2.0f * (*(quaternion+1) * *(quaternion+2) + *quaternion
+						* *(quaternion+3)), *quaternion * *quaternion + *(quaternion+1)
+						* *(quaternion+1) - *(quaternion+2) * *(quaternion+2) - *(quaternion+3)
+						* *(quaternion+3));
+		  eulerAngles.angle.pitch = -asin(2.0f * (*(quaternion+1) * *(quaternion+3) - *quaternion
+						* *(quaternion+2)));
+		  eulerAngles.angle.roll  = atan2(2.0f * (*quaternion * *(quaternion+1) + *(quaternion+2)
+						* *(quaternion+3)), *quaternion * *quaternion - *(quaternion+1)
+						* *(quaternion+1) - *(quaternion+2) * *(quaternion+2) + *(quaternion+3)
+						* *(quaternion+3));
+		  eulerAngles.angle.pitch *= RAD_TO_DEG;
+		  eulerAngles.angle.yaw   *= RAD_TO_DEG;
+		  //euler.yaw  -= 8.5;
+		  eulerAngles.angle.yaw -= 0.81;
+		  eulerAngles.angle.roll *= RAD_TO_DEG;*/
+		  accel.axis.x = accX;
+		  accel.axis.y = accY;
+		  accel.axis.z = accZ;
+
+		  gyro.axis.x = gyrX * RAD_TO_DEG;
+		  gyro.axis.y = gyrY * RAD_TO_DEG;
+		  gyro.axis.z = gyrZ * RAD_TO_DEG;
+
+		  magnet.axis.x = magX;
+		  magnet.axis.y = magY;
+		  magnet.axis.z = magZ;
+
+		  FusionAhrsUpdate(&fusionahrs, gyro, accel,  magnet, delta);
+		  eulerAngles = FusionQuaternionToEulerAngles(FusionAhrsGetQuaternion(&fusionahrs));
+
+		  //strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
+		  //HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+	  }
+
+	  if(updateRemote){
+		  updateRemote = false;
+		  strSize = sprintf((char*)strBuffer, "CH1: %d\tCH2: %d\tCH3: %d\tCH4: %d\tCH5: %d\tCH6: %d\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
+		  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+	  }
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+ /**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+  static uint32_t cntNow;
+  static uint32_t cntPrev;
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+  if(htim->Instance == TIM6){
+    if(MPU9250_getDrdyStatus(&mpu9250)){
+  	MPU9250_readSensor(&mpu9250);
+  	cntPrev = cntNow;
+  	cntNow = __HAL_TIM_GET_COUNTER(&htim2);
+  	delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
+  	IMURateFreq = (1.0f / delta);
+  	updateIMU = true;
+  	}
+  }
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
