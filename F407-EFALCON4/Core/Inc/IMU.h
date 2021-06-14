@@ -16,11 +16,5 @@
 #define RAD_TO_DEG 57.295779513082320876798154814105
 #define EULER 2.718281828459045235360287471352
 
-typedef struct {
-	float yaw;
-	float pitch;
-	float roll;
-}EulerAngles_t;
-
-void getEulerAngles(EulerAngles_t *euler);
+void getEulerAngles();
 #endif /* INC_IMU_H_ */

@@ -1,0 +1,29 @@
+		if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1){
+			CCRCH1 = TIM12->CCR1;
+			if(CCRCH1 - CCRCH2 >= 4000) {
+				PPMCount = 0;
+				startCap = false;
+				stopCap = false;
+			}
+
+			if(!startCap){
+				startCap = true;
+				startPWM = CCRCH1;
+			}
+
+			if(startCap && stopCap){
+				valPWM = CCRCH1 - startPWM;
+				PPMOutput[PPMCount] = valPWM;
+				startPWM = TIM12->CCR1;
+				//startCap = false;
+				stopCap = false;
+			}
+
+		} else if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2){
+			CCRCH2 = TIM12->CCR2;
+			if(startCap) {
+				stopCap = true;
+				PPMCount++;
+				if(PPMCount >= 9) PPMCount = 0;
+			}
+		}

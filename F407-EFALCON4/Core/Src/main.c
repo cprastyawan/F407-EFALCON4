@@ -71,7 +71,6 @@ UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
-DMA_HandleTypeDef hdma_usart2_tx;
 
 /* Definitions for IMU_Task */
 osThreadId_t IMU_TaskHandle;
@@ -80,11 +79,36 @@ const osThreadAttr_t IMU_Task_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
+/* Definitions for Remote_Task */
+osThreadId_t Remote_TaskHandle;
+const osThreadAttr_t Remote_Task_attributes = {
+  .name = "Remote_Task",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal3,
+};
+/* Definitions for PrintSerial_Tas */
+osThreadId_t PrintSerial_TasHandle;
+const osThreadAttr_t PrintSerial_Tas_attributes = {
+  .name = "PrintSerial_Tas",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for IMUEvent */
+osEventFlagsId_t IMUEventHandle;
+const osEventFlagsAttr_t IMUEvent_attributes = {
+  .name = "IMUEvent"
+};
+/* Definitions for RemoteEvent */
+osEventFlagsId_t RemoteEventHandle;
+const osEventFlagsAttr_t RemoteEvent_attributes = {
+  .name = "RemoteEvent"
+};
 /* USER CODE BEGIN PV */
+//String
 uint8_t strBuffer[512];
 uint16_t strSize = 0;
 
-EulerAngles_t euler; //Euler Angles (roll, pitch, yaw)
+//IMU
 float MPU9250_selfTest[6];
 MPU9250_t mpu9250;
 float accX, accY, accZ;
@@ -96,21 +120,28 @@ float delta;
 bool updateIMU = false;
 bool updateRemote = true;
 FusionAhrs fusionahrs;
-
-PWMRC_t pwmrc;
-uint8_t PPMOutput[6];
-
+static uint32_t cntNow;
+static uint32_t cntPrev;
 FusionVector3 accel;
 FusionVector3 gyro;
 FusionVector3 magnet;
 FusionEulerAngles eulerAngles;
 FusionEulerAngles eulerAnglesRef;
+
+//Remote
+RC_t PPMRC;
+FusionEulerAngles eulerInput;
+FusionEulerAngles error;
+volatile uint32_t PPMOutput[9];
+
+//Position Controller
+volatile Velocity_t inputVel;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SDIO_MMC_Init(void);
 static void MX_SPI1_Init(void);
@@ -131,7 +162,10 @@ static void MX_TIM2_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM12_Init(void);
 void Start_IMU_Task(void *argument);
+void Start_Remote_Task(void *argument);
+void Start_PrintSerial_Task(void *argument);
 
+static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -164,6 +198,10 @@ uint32_t DWT_Init(void)
       return 1; /*clock cycle counter not started*/
     }
 }
+
+uint32_t DWT_GetuS(){
+	return  DWT->CYCCNT / (SystemCoreClock / 1000000U);
+}
 /* USER CODE END 0 */
 
 /**
@@ -194,7 +232,6 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_I2C1_Init();
   //MX_SDIO_MMC_Init();
   MX_SPI1_Init();
@@ -214,6 +251,9 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM6_Init();
   MX_TIM12_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
   HAL_Delay(1000);
   strSize = sprintf((char*)strBuffer, "Mulai!\r\n");
@@ -353,9 +393,22 @@ int main(void)
   /* creation of IMU_Task */
   IMU_TaskHandle = osThreadNew(Start_IMU_Task, NULL, &IMU_Task_attributes);
 
+  /* creation of Remote_Task */
+  Remote_TaskHandle = osThreadNew(Start_Remote_Task, NULL, &Remote_Task_attributes);
+
+  /* creation of PrintSerial_Tas */
+  PrintSerial_TasHandle = osThreadNew(Start_PrintSerial_Task, NULL, &PrintSerial_Tas_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
+
+  /* Create the event(s) */
+  /* creation of IMUEvent */
+  IMUEventHandle = osEventFlagsNew(&IMUEvent_attributes);
+
+  /* creation of RemoteEvent */
+  RemoteEventHandle = osEventFlagsNew(&RemoteEvent_attributes);
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
@@ -418,6 +471,20 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* TIM8_BRK_TIM12_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(TIM8_BRK_TIM12_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(TIM8_BRK_TIM12_IRQn);
+  /* TIM6_DAC_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
 }
 
 /**
@@ -1126,11 +1193,17 @@ static void MX_TIM12_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC.ICFilter = 0;
   if (HAL_TIM_IC_ConfigChannel(&htim12, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+  if (HAL_TIM_IC_ConfigChannel(&htim12, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1273,22 +1346,6 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -1366,16 +1423,33 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
-	if(htim->Instance == TIM12){
-		static uint8_t PPMCount;
+	static uint8_t PPMCount;
+	static uint32_t PWMCH2;
 
-		PPMOutput[PPMCount] = __HAL_TIM_GET_COMPARE(&htim12, TIM_CHANNEL_1);
-		__HAL_TIM_SET_COUNTER(&htim12, 0);
-		PPMCount++;
-		updateRemote = true;
-		if(PPMCount >= 7){
-			PPMCount = 0;
+	if(htim->Instance == TIM12){
+		if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1){
+			static uint32_t oldVal;
+			static uint32_t nowVal;
+			static uint32_t deltaFalling;
+
+			nowVal = TIM12->CCR1;
+			if(nowVal >= oldVal) deltaFalling = nowVal - oldVal;
+			oldVal = nowVal;
+
+			if(nowVal >= PWMCH2 && (nowVal - PWMCH2 >= 4000)){
+				__HAL_TIM_SET_COUNTER(&htim12, 0);
+				oldVal = 0;
+				PPMCount = 0;
+			} else {
+				PPMOutput[PPMCount] = deltaFalling;
+				PPMCount++;
+			}
+
 		}
+		else if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2){
+			PWMCH2 = TIM12->CCR2;
+		}
+
 	}
 }
 
@@ -1395,9 +1469,8 @@ void Start_IMU_Task(void *argument)
 {
   /* USER CODE BEGIN 5 */
 	static uint32_t curTick;
-	  HAL_TIM_Base_Start_IT(&htim6);
-	  HAL_TIM_Base_Start(&htim2);
-	  HAL_TIM_IC_Start_IT(&htim12, TIM_CHANNEL_1);
+	  //HAL_TIM_Base_Start_IT(&htim6);
+	  //HAL_TIM_Base_Start(&htim2);
   /* Infinite loop */
   for(;;)
   {
@@ -1420,7 +1493,7 @@ void Start_IMU_Task(void *argument)
 		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);*/
 	  }
 
-	  if(updateIMU){
+	 /* if(updateIMU){
 		  updateIMU = false;
 
 		  accX = MPU9250_getAccelX_g(&mpu9250);
@@ -1439,7 +1512,7 @@ void Start_IMU_Task(void *argument)
 		  magY = MPU9250_getMagY_uT(&mpu9250);
 		  magZ = MPU9250_getMagZ_uT(&mpu9250);
 
-		  /*MadgwickQuaternionUpdate(accX, accY, accZ, gyrX, gyrY, gyrZ, magX, magY, magZ, (float)delta);
+		  MadgwickQuaternionUpdate(accX, accY, accZ, gyrX, gyrY, gyrZ, magX, magY, magZ, (float)delta);
 		  getQ(quaternion);
 
 		  eulerAngles.angle.yaw   = atan2(2.0f * (*(quaternion+1) * *(quaternion+2) + *quaternion
@@ -1456,7 +1529,7 @@ void Start_IMU_Task(void *argument)
 		  eulerAngles.angle.yaw   *= RAD_TO_DEG;
 		  //euler.yaw  -= 8.5;
 		  eulerAngles.angle.yaw -= 0.81;
-		  eulerAngles.angle.roll *= RAD_TO_DEG;*/
+		  eulerAngles.angle.roll *= RAD_TO_DEG;
 		  accel.axis.x = accX;
 		  accel.axis.y = accY;
 		  accel.axis.z = accZ;
@@ -1472,18 +1545,86 @@ void Start_IMU_Task(void *argument)
 		  FusionAhrsUpdate(&fusionahrs, gyro, accel,  magnet, delta);
 		  eulerAngles = FusionQuaternionToEulerAngles(FusionAhrsGetQuaternion(&fusionahrs));
 
-		  strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
-		  HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
-	  }
+		  //strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
+		  //HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
+	  }*/
 
 	  /*if(updateRemote){
 		  updateRemote = false;
 		  strSize = sprintf((char*)strBuffer, "CH1: %d\tCH2: %d\tCH3: %d\tCH4: %d\tCH5: %d\tCH6: %d\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
 		  //HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
 	  }*/
-    osDelay(1);
+    osDelay(1000);
   }
   /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_Start_Remote_Task */
+/**
+* @brief Function implementing the Remote_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Start_Remote_Task */
+void Start_Remote_Task(void *argument)
+{
+  /* USER CODE BEGIN Start_Remote_Task */
+	HAL_TIM_IC_Start_IT(&htim12, TIM_CHANNEL_1);
+	HAL_TIM_IC_Start_IT(&htim12, TIM_CHANNEL_2);
+  /* Infinite loop */
+  for(;;)
+  {
+	  PPMRC.Pitch = constrain(PPMOutput[0], 1000, 2000);
+	  PPMRC.Roll = constrain(PPMOutput[1], 1000, 2000);
+	  PPMRC.Throttle = constrain(PPMOutput[2], 1000, 2000);
+	  PPMRC.Yaw = constrain(PPMOutput[3], 1000, 2000);
+	  PPMRC.SWB = constrain(PPMOutput[4], 1000, 2000);
+	  PPMRC.SWC = constrain(PPMOutput[5], 1000, 2000);
+
+	  //eulerInput.angle.pitch = (float)map((float)PPMRC.Pitch, 1000.0, 2000.0, -30.0, 30.0);
+	  //eulerInput.angle.roll = (float)map((float)PPMRC.Roll, 1000.0, 2000.0, -30.0, 30.0);
+	  //eulerInput.angle.yaw = (float)map((float)PPMRC.Yaw, 1000.0, 2000.0, -30.0, 30.0);
+
+	  //inputVel.xV = (float)map((float)PPMRC.Roll, 1000.0, 2000.0, -5.0, 5.0);
+	  //inputVel.yV = (float)map((float)PPMRC.Pitch, 1000.0, 2000.0, -5.0, 5.0);
+	  inputVel.xV = 3.0;
+	  inputVel.yV = 2.5;
+
+	 //HAL_UART_Transmit_IT(&SERIAL_DEBUG, (uint8_t*)".\r\n", 4);
+
+	//osEventFlagsWait(RemoteEventHandle, flag, osFlagsWaitAny, osWaitForever);
+	//flag = osEventFlagsGet(RemoteEventHandle);
+	//PPMOutput[flag] = prevCount;
+	//__HAL_TIM_SET_COUNTER(&htim12, 0);
+	//osEventFlagsClear(RemoteEventHandle, flag);
+
+    osDelay(10);
+  }
+  /* USER CODE END Start_Remote_Task */
+}
+
+/* USER CODE BEGIN Header_Start_PrintSerial_Task */
+/**
+* @brief Function implementing the PrintSerial_Tas thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Start_PrintSerial_Task */
+void Start_PrintSerial_Task(void *argument)
+{
+  /* USER CODE BEGIN Start_PrintSerial_Task */
+  /* Infinite loop */
+  for(;;)
+  {
+	//strSize = sprintf((char*)strBuffer, "CH1: %lu\tCH2: %lu\tCH3: %lu\tCH4: %lu\tCH5: %lu\tCH6: %lu\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
+	//HAL_UART_Transmit_IT(&SERIAL_DEBUG, strBuffer, strSize);
+	strSize = sprintf((char*)strBuffer, "Velocity:%.2f %.2f\r\n", inputVel.xV, inputVel.yV);
+	  //strSize = sprintf((char*)strBuffer, "Velocity\r\n");
+	HAL_UART_Transmit_IT(&SERIAL_DEBUG, strBuffer, strSize);
+
+    osDelay(20);
+  }
+  /* USER CODE END Start_PrintSerial_Task */
 }
 
  /**
@@ -1497,8 +1638,7 @@ void Start_IMU_Task(void *argument)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-  static uint32_t cntNow;
-  static uint32_t cntPrev;
+
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM7) {
     HAL_IncTick();
@@ -1506,12 +1646,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 1 */
   if(htim->Instance == TIM6){
     if(MPU9250_getDrdyStatus(&mpu9250)){
-  	MPU9250_readSensor(&mpu9250);
-  	cntPrev = cntNow;
-  	cntNow = __HAL_TIM_GET_COUNTER(&htim2);
-  	delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
-  	IMURateFreq = (1.0f / delta);
-  	updateIMU = true;
+    	MPU9250_readSensor(&mpu9250);
+    	cntPrev = cntNow;
+    	cntNow = __HAL_TIM_GET_COUNTER(&htim2);
+    	delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
+    	IMURateFreq = (1.0f / delta);
+    	updateIMU = true;
   	}
   }
   /* USER CODE END Callback 1 */
@@ -1526,6 +1666,8 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);
   while (1)
   {
   }

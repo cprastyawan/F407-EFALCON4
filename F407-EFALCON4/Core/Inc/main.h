@@ -38,13 +38,24 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 typedef struct {
-	uint16_t CH1;
-	uint16_t CH2;
-	uint16_t CH3;
-	uint16_t CH4;
-	uint16_t CH5;
-	uint16_t CH6;
-} PWMRC_t;
+	uint16_t Roll;
+	uint16_t Pitch;
+	uint16_t Throttle;
+	uint16_t Yaw;
+	uint16_t SWC;
+	uint16_t SWB;
+} RC_t;
+
+typedef struct {
+	float x;
+	float y;
+}Point_t;
+
+typedef struct {
+	float xV;
+	float yV;
+}Velocity_t;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -55,6 +66,7 @@ typedef struct {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 #define map(x, in_min, in_max, out_min, out_max) (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
+#define constrain(x, min, max) (x < min ? min : x > max ? max : x)
 /* USER CODE END EM */
 
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
