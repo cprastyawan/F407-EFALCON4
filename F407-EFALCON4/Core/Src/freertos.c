@@ -118,6 +118,7 @@ void Start_IMU_Task(void *argument)
   /* Infinite loop */
   for(;;)
   {
+
     osDelay(1);
   }
   /* USER CODE END Start_IMU_Task */
