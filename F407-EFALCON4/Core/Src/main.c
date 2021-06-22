@@ -29,6 +29,9 @@
 #include "MPU9250.h"
 #include "IMU.h"
 #include "Fusion.h"
+#include "bmp2.h"
+#include "retarget.h"
+#include "bmp2_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -76,21 +79,21 @@ UART_HandleTypeDef huart3;
 osThreadId_t IMU_TaskHandle;
 const osThreadAttr_t IMU_Task_attributes = {
   .name = "IMU_Task",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
 /* Definitions for Remote_Task */
 osThreadId_t Remote_TaskHandle;
 const osThreadAttr_t Remote_Task_attributes = {
   .name = "Remote_Task",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal3,
 };
 /* Definitions for PrintSerial_Tas */
 osThreadId_t PrintSerial_TasHandle;
 const osThreadAttr_t PrintSerial_Tas_attributes = {
   .name = "PrintSerial_Tas",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for IMUEvent */
@@ -202,6 +205,95 @@ uint32_t DWT_Init(void)
 uint32_t DWT_GetuS(){
 	return  DWT->CYCCNT / (SystemCoreClock / 1000000U);
 }
+
+static int8_t get_data(uint32_t period, struct bmp2_config *conf, struct bmp2_dev *dev){
+    int8_t rslt = BMP2_E_NULL_PTR;
+    int8_t idx = 1;
+    struct bmp2_status status;
+    struct bmp2_data comp_data;
+
+    printf("Measurement delay : %lu us\r\n", (long unsigned int)period);
+
+    while (idx <= 50)
+    {
+        rslt = bmp2_get_status(&status, dev);
+        bmp2_error_codes_print_result("bmp2_get_status", rslt);
+
+        if (status.measuring == BMP2_MEAS_DONE)
+        {
+            /* Delay between measurements */
+            dev->delay_us(period, dev->intf_ptr);
+
+            /* Read compensated data */
+            rslt = bmp2_get_sensor_data(&comp_data, dev);
+            bmp2_error_codes_print_result("bmp2_get_sensor_data", rslt);
+
+            #ifdef BMP2_64BIT_COMPENSATION
+            comp_data.pressure = comp_data.pressure / 256;
+            #endif
+
+            #ifdef BMP2_DOUBLE_COMPENSATION
+            printf("Data[%d]:    Temperature: %f deg C	Pressure: %f Pa\r\n",
+                   idx,
+                   comp_data.temperature,
+                   comp_data.pressure);
+            #else
+            printf("Data[%d]:    Temperature: %ld deg C	Pressure: %lu Pa\n", idx, (long int)comp_data.temperature,
+                   (long unsigned int)comp_data.pressure);
+            #endif
+
+            idx++;
+        }
+    }
+
+    return rslt;
+}
+
+void bmp280_setup(){
+	   int8_t rslt;
+	    uint32_t meas_time;
+	    struct bmp2_dev dev;
+	    struct bmp2_config conf;
+
+	    /* Interface selection is to be updated as parameter
+	     * For I2C :  BMP2_I2C_INTF
+	     * For SPI :  BMP2_SPI_INTF
+	     */
+	    rslt = bmp2_interface_selection(&dev, BMP2_SPI_INTF);
+	    bmp2_error_codes_print_result("bmp2_interface_selection", rslt);
+
+	    rslt = bmp2_init(&dev);
+	    bmp2_error_codes_print_result("bmp2_init", rslt);
+
+	    /* Always read the current settings before writing, especially when all the configuration is not modified */
+	    rslt = bmp2_get_config(&conf, &dev);
+	    bmp2_error_codes_print_result("bmp2_get_config", rslt);
+
+	    /* Configuring the over-sampling mode, filter coefficient and output data rate */
+	    /* Overwrite the desired settings */
+	    conf.filter = BMP2_FILTER_OFF;
+
+	    /* Over-sampling mode is set as high resolution i.e., os_pres = 8x and os_temp = 1x */
+	    conf.os_mode = BMP2_OS_MODE_HIGH_RESOLUTION;
+
+	    /* Setting the output data rate */
+	    conf.odr = BMP2_ODR_0_5_MS;
+
+	    rslt = bmp2_set_config(&conf, &dev);
+	    bmp2_error_codes_print_result("bmp2_set_config", rslt);
+
+	    /* Set normal power mode */
+	    rslt = bmp2_set_power_mode(BMP2_POWERMODE_NORMAL, &conf, &dev);
+	    bmp2_error_codes_print_result("bmp2_set_power_mode", rslt);
+
+	    /* Calculate measurement time in microseconds */
+	    rslt = bmp2_compute_meas_time(&meas_time, &conf, &dev);
+	    bmp2_error_codes_print_result("bmp2_compute_meas_time", rslt);
+
+	    /* Read pressure and temperature data */
+	    rslt = get_data(meas_time, &conf, &dev);
+	    bmp2_error_codes_print_result("get_data", rslt);
+}
 /* USER CODE END 0 */
 
 /**
@@ -233,7 +325,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
-  //MX_SDIO_MMC_Init();
+  MX_SDIO_MMC_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
   MX_TIM1_Init();
@@ -255,7 +347,11 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
-  HAL_Delay(1000);
+  HAL_Delay(25);
+  RetargetInit(&SERIAL_DEBUG);
+
+  printf("Coba printf\r\n");
+
   strSize = sprintf((char*)strBuffer, "Mulai!\r\n");
   HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
 
@@ -323,6 +419,10 @@ int main(void)
   //while(1);
 
   FusionAhrsInitialise(&fusionahrs, 0.2);
+
+  bmp280_setup();
+
+  HAL_Delay(3000);
 
 
   //MPU9250_begin();
@@ -1574,8 +1674,8 @@ void Start_Remote_Task(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  PPMRC.Pitch = constrain(PPMOutput[0], 1000, 2000);
-	  PPMRC.Roll = constrain(PPMOutput[1], 1000, 2000);
+	  PPMRC.Roll = constrain(PPMOutput[0], 1000, 2000);
+	  PPMRC.Pitch = constrain(PPMOutput[1], 1000, 2000);
 	  PPMRC.Throttle = constrain(PPMOutput[2], 1000, 2000);
 	  PPMRC.Yaw = constrain(PPMOutput[3], 1000, 2000);
 	  PPMRC.SWB = constrain(PPMOutput[4], 1000, 2000);
@@ -1585,10 +1685,8 @@ void Start_Remote_Task(void *argument)
 	  //eulerInput.angle.roll = (float)map((float)PPMRC.Roll, 1000.0, 2000.0, -30.0, 30.0);
 	  //eulerInput.angle.yaw = (float)map((float)PPMRC.Yaw, 1000.0, 2000.0, -30.0, 30.0);
 
-	  //inputVel.xV = (float)map((float)PPMRC.Roll, 1000.0, 2000.0, -5.0, 5.0);
-	  //inputVel.yV = (float)map((float)PPMRC.Pitch, 1000.0, 2000.0, -5.0, 5.0);
-	  inputVel.xV = 3.0;
-	  inputVel.yV = 2.5;
+	  inputVel.xV = (float)map((float)PPMRC.Roll, 1000.0, 2000.0, -10.0, 10.0);
+	  inputVel.yV = (float)map((float)PPMRC.Pitch, 1000.0, 2000.0, -10.0, 10.0);
 
 	 //HAL_UART_Transmit_IT(&SERIAL_DEBUG, (uint8_t*)".\r\n", 4);
 
@@ -1618,9 +1716,9 @@ void Start_PrintSerial_Task(void *argument)
   {
 	//strSize = sprintf((char*)strBuffer, "CH1: %lu\tCH2: %lu\tCH3: %lu\tCH4: %lu\tCH5: %lu\tCH6: %lu\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
 	//HAL_UART_Transmit_IT(&SERIAL_DEBUG, strBuffer, strSize);
-	strSize = sprintf((char*)strBuffer, "Velocity:%.2f %.2f\r\n", inputVel.xV, inputVel.yV);
+	//strSize = sprintf((char*)strBuffer, "Velocity: %.2f %.2f\r\n", inputVel.xV, inputVel.yV);
 	  //strSize = sprintf((char*)strBuffer, "Velocity\r\n");
-	HAL_UART_Transmit_IT(&SERIAL_DEBUG, strBuffer, strSize);
+	//HAL_UART_Transmit_IT(&SERIAL_DEBUG, strBuffer, strSize);
 
     osDelay(20);
   }
