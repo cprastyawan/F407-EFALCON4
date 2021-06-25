@@ -99,15 +99,6 @@ static int whoAmIAK8963(MPU9250_t *mpu9250){
 	  return mpu9250->_buffer[0];
 }
 
-static void highSpeedSPI(MPU9250_t *mpu9250){
-	HAL_SPI_DeInit(mpu9250->_spi);
-	mpu9250->_spi->Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
-
-	if(HAL_SPI_Init(mpu9250->_spi) != HAL_OK){
-	    Error_Handler();
-	}
-}
-
 void MPU9250_init(MPU9250_t *mpu9250, SPI_HandleTypeDef *hspi, GPIO_TypeDef * csPort, uint16_t csPin){
   mpu9250->_spi = hspi;
   mpu9250->_csPort = csPort;
@@ -237,7 +228,6 @@ int MPU9250_begin(MPU9250_t *mpu9250){
 	  if (MPU9250_calibrateGyro(mpu9250) < 0) {
 	    return -20;
 	  }
-	  highSpeedSPI(mpu9250);
 	  // successful init, return 1
 	  return 1;
 	}

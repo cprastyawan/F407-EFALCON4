@@ -20,18 +20,21 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+
 #include "MPU9250.h"
 #include "IMU.h"
 #include "Fusion.h"
 #include "bmp2.h"
 #include "retarget.h"
 #include "bmp2_app.h"
+#include "Kalman.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,7 +57,7 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 
-MMC_HandleTypeDef hmmc;
+SD_HandleTypeDef hsd;
 
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
@@ -95,6 +98,13 @@ const osThreadAttr_t PrintSerial_Tas_attributes = {
   .name = "PrintSerial_Tas",
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for BMP_Task */
+osThreadId_t BMP_TaskHandle;
+const osThreadAttr_t BMP_Task_attributes = {
+  .name = "BMP_Task",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for IMUEvent */
 osEventFlagsId_t IMUEventHandle;
@@ -146,12 +156,9 @@ volatile Velocity_t inputVel;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_SDIO_MMC_Init(void);
+static void MX_SDIO_SD_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
-static void MX_TIM1_Init(void);
-static void MX_TIM3_Init(void);
-static void MX_TIM4_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_TIM9_Init(void);
 static void MX_TIM10_Init(void);
@@ -164,9 +171,13 @@ static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM12_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 void Start_IMU_Task(void *argument);
 void Start_Remote_Task(void *argument);
 void Start_PrintSerial_Task(void *argument);
+void Start_BMP_Task(void *argument);
 
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
@@ -249,50 +260,8 @@ static int8_t get_data(uint32_t period, struct bmp2_config *conf, struct bmp2_de
     return rslt;
 }
 
-void bmp280_setup(){
-	   int8_t rslt;
-	    uint32_t meas_time;
-	    struct bmp2_dev dev;
-	    struct bmp2_config conf;
+void bmp280_setup(struct bmp2_config *conf, struct bmp2_dev *dev){
 
-	    /* Interface selection is to be updated as parameter
-	     * For I2C :  BMP2_I2C_INTF
-	     * For SPI :  BMP2_SPI_INTF
-	     */
-	    rslt = bmp2_interface_selection(&dev, BMP2_SPI_INTF);
-	    bmp2_error_codes_print_result("bmp2_interface_selection", rslt);
-
-	    rslt = bmp2_init(&dev);
-	    bmp2_error_codes_print_result("bmp2_init", rslt);
-
-	    /* Always read the current settings before writing, especially when all the configuration is not modified */
-	    rslt = bmp2_get_config(&conf, &dev);
-	    bmp2_error_codes_print_result("bmp2_get_config", rslt);
-
-	    /* Configuring the over-sampling mode, filter coefficient and output data rate */
-	    /* Overwrite the desired settings */
-	    conf.filter = BMP2_FILTER_OFF;
-
-	    /* Over-sampling mode is set as high resolution i.e., os_pres = 8x and os_temp = 1x */
-	    conf.os_mode = BMP2_OS_MODE_HIGH_RESOLUTION;
-
-	    /* Setting the output data rate */
-	    conf.odr = BMP2_ODR_0_5_MS;
-
-	    rslt = bmp2_set_config(&conf, &dev);
-	    bmp2_error_codes_print_result("bmp2_set_config", rslt);
-
-	    /* Set normal power mode */
-	    rslt = bmp2_set_power_mode(BMP2_POWERMODE_NORMAL, &conf, &dev);
-	    bmp2_error_codes_print_result("bmp2_set_power_mode", rslt);
-
-	    /* Calculate measurement time in microseconds */
-	    rslt = bmp2_compute_meas_time(&meas_time, &conf, &dev);
-	    bmp2_error_codes_print_result("bmp2_compute_meas_time", rslt);
-
-	    /* Read pressure and temperature data */
-	    rslt = get_data(meas_time, &conf, &dev);
-	    bmp2_error_codes_print_result("get_data", rslt);
 }
 /* USER CODE END 0 */
 
@@ -325,12 +294,9 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
-  MX_SDIO_MMC_Init();
+  MX_SDIO_SD_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
-  MX_TIM1_Init();
-  MX_TIM3_Init();
-  MX_TIM4_Init();
   MX_TIM5_Init();
   MX_TIM9_Init();
   MX_TIM10_Init();
@@ -343,6 +309,10 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM6_Init();
   MX_TIM12_Init();
+  MX_FATFS_Init();
+  MX_TIM1_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
 
   /* Initialize interrupts */
   MX_NVIC_Init();
@@ -352,75 +322,59 @@ int main(void)
 
   printf("Coba printf\r\n");
 
-  strSize = sprintf((char*)strBuffer, "Mulai!\r\n");
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("Mulai!\r\n");
 
   if(DWT_Init()){
- 	  strSize = sprintf((char*)strBuffer, "DWT gagal inisialisasi!!\r\n");
- 	  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+ 	  printf("DWT gagal inisialisasi!\r\n");
  	  while(1);
    }
 
   MPU9250_init(&mpu9250, &hspi1, IMU_CS_GPIO_Port, IMU_CS_Pin);
   int statusCode = MPU9250_begin(&mpu9250);
   if(statusCode < 0){
-	  strSize = sprintf((char*)strBuffer, "IMU gagal inisialisasi! code: %d\r\n", statusCode);
-	  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+	  printf("IMU gagal inisialisasi");
 	  while(1);
   }
 
   statusCode = MPU9250_enableDataReadyInterrupt(&mpu9250);
   if(statusCode < 0){
-	  strSize = sprintf((char*)strBuffer, "Data ready Interrupt gagal! code: %d\r\n", statusCode);
-	  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+	  printf("Data ready Interrupt gagal! code: %d\r\n", statusCode);
 	  while(1);
   }
 
-  strSize = sprintf((char*)strBuffer, "Memulai kalibrasi accelerometer...\r\n");
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("Memulai kalibrasi accelerometer...\r\n");
 
   MPU9250_calibrateAccel(&mpu9250);
 
-  strSize = sprintf((char*)strBuffer, "Kalibrasi accelerometer sukses!\r\n");
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("Kalibrasi accelerometer sukses!\r\n");
 
-  strSize = sprintf((char*)strBuffer, "Memulai kalibrasi magnetometer...\r\n");
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("Memulai kalibrasi magnetometer...\r\n");
   HAL_Delay(2000);
 
   //MPU9250_calibrateMag(&mpu9250);
 
-  strSize = sprintf((char*)strBuffer, "Kalibrasi magnetometer sukses!\r\n");
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("Kalibrasi magnetometer sukses!\r\n");
   HAL_Delay(2000);
 
-  strSize = sprintf((char*)strBuffer, "MPU9250 Self Test\r\n");
+  printf("MPU9250 Self Test\r\n");
   HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
 
   MPU9250_SelfTest(&mpu9250, MPU9250_selfTest);
 
-  strSize = sprintf((char*)strBuffer, "x-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[0]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("x-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[0]);
 
-  strSize = sprintf((char*)strBuffer, "y-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[1]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("y-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[1]);
 
-  strSize = sprintf((char*)strBuffer, "z-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[2]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("z-Axis self test: acceleration trim within: %f %% of factory value\r\n", MPU9250_selfTest[2]);
 
-  strSize = sprintf((char*)strBuffer, "x-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[3]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("x-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[3]);
 
-  strSize = sprintf((char*)strBuffer, "y-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[4]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("y-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[4]);
 
-  strSize = sprintf((char*)strBuffer, "z-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[5]);
-  HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+  printf("z-Axis self test: gyration trim within: %f %% of factory value\r\n", MPU9250_selfTest[5]);
   //while(1);
 
-  FusionAhrsInitialise(&fusionahrs, 0.2);
-
-  bmp280_setup();
+  FusionAhrsInitialise(&fusionahrs, 0.5);
 
   HAL_Delay(3000);
 
@@ -498,6 +452,9 @@ int main(void)
 
   /* creation of PrintSerial_Tas */
   PrintSerial_TasHandle = osThreadNew(Start_PrintSerial_Task, NULL, &PrintSerial_Tas_attributes);
+
+  /* creation of BMP_Task */
+  BMP_TaskHandle = osThreadNew(Start_BMP_Task, NULL, &BMP_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -676,7 +633,7 @@ static void MX_I2C1_Init(void)
   * @param None
   * @retval None
   */
-static void MX_SDIO_MMC_Init(void)
+static void MX_SDIO_SD_Init(void)
 {
 
   /* USER CODE BEGIN SDIO_Init 0 */
@@ -686,21 +643,13 @@ static void MX_SDIO_MMC_Init(void)
   /* USER CODE BEGIN SDIO_Init 1 */
 
   /* USER CODE END SDIO_Init 1 */
-  hmmc.Instance = SDIO;
-  hmmc.Init.ClockEdge = SDIO_CLOCK_EDGE_RISING;
-  hmmc.Init.ClockBypass = SDIO_CLOCK_BYPASS_DISABLE;
-  hmmc.Init.ClockPowerSave = SDIO_CLOCK_POWER_SAVE_DISABLE;
-  hmmc.Init.BusWide = SDIO_BUS_WIDE_1B;
-  hmmc.Init.HardwareFlowControl = SDIO_HARDWARE_FLOW_CONTROL_DISABLE;
-  hmmc.Init.ClockDiv = 4;
-  if (HAL_MMC_Init(&hmmc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_MMC_ConfigWideBusOperation(&hmmc, SDIO_BUS_WIDE_4B) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  hsd.Instance = SDIO;
+  hsd.Init.ClockEdge = SDIO_CLOCK_EDGE_RISING;
+  hsd.Init.ClockBypass = SDIO_CLOCK_BYPASS_DISABLE;
+  hsd.Init.ClockPowerSave = SDIO_CLOCK_POWER_SAVE_DISABLE;
+  hsd.Init.BusWide = SDIO_BUS_WIDE_1B;
+  hsd.Init.HardwareFlowControl = SDIO_HARDWARE_FLOW_CONTROL_DISABLE;
+  hsd.Init.ClockDiv = 4;
   /* USER CODE BEGIN SDIO_Init 2 */
 
   /* USER CODE END SDIO_Init 2 */
@@ -796,7 +745,8 @@ static void MX_TIM1_Init(void)
   /* USER CODE END TIM1_Init 0 */
 
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
   /* USER CODE BEGIN TIM1_Init 1 */
 
@@ -808,7 +758,7 @@ static void MX_TIM1_Init(void)
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_IC_Init(&htim1) != HAL_OK)
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -818,32 +768,44 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_4) != HAL_OK)
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 
 }
 
@@ -859,19 +821,24 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84 - 1;
+  htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -881,30 +848,9 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
 
 }
 
@@ -943,24 +889,18 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC.ICFilter = 0;
   if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
   if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1012,18 +952,11 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
   if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1110,7 +1043,7 @@ static void MX_TIM6_Init(void)
   htim6.Instance = TIM6;
   htim6.Init.Prescaler = 84 - 1;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 10000 - 1;
+  htim6.Init.Period = 100 - 1;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
@@ -1456,68 +1389,65 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_6
-                          |GPIO_PIN_1, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, US_TRIG_Pin|GPIO_PIN_3|GPIO_PIN_4|LORA_RST_Pin
+                          |LED3_Pin|LORA_NSS_Pin|RTC_NC_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(IMU_CS_GPIO_Port, IMU_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, BMP_CS_Pin|LED1_Pin|LED2_Pin|LED3_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOE, BMP_CS_Pin|LED1_Pin|LED2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|GPIO_PIN_15, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LORA_DIO1_Pin|GPIO_PIN_15, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10|GPIO_PIN_11, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, LORA_DIO2_Pin|LORA_DIO3_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PE2 PE3 PE4 PE6
+  /*Configure GPIO pins : US_TRIG_Pin PE3 PE4 LORA_RST_Pin
                            BMP_CS_Pin LED1_Pin LED2_Pin LED3_Pin
-                           PE1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_6
+                           LORA_NSS_Pin RTC_NC_Pin */
+  GPIO_InitStruct.Pin = US_TRIG_Pin|GPIO_PIN_3|GPIO_PIN_4|LORA_RST_Pin
                           |BMP_CS_Pin|LED1_Pin|LED2_Pin|LED3_Pin
-                          |GPIO_PIN_1;
+                          |LORA_NSS_Pin|RTC_NC_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC13 IMU_CS_Pin */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|IMU_CS_Pin;
+  /*Configure GPIO pin : IMU_CS_Pin */
+  GPIO_InitStruct.Pin = IMU_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(IMU_CS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB12 PB15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_15;
+  /*Configure GPIO pins : LORA_DIO1_Pin PB15 */
+  GPIO_InitStruct.Pin = LORA_DIO1_Pin|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PD10 PD11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+  /*Configure GPIO pins : LORA_DIO2_Pin LORA_DIO3_Pin */
+  GPIO_InitStruct.Pin = LORA_DIO2_Pin|LORA_DIO3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_11;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pin : GPS_INT_Pin */
+  GPIO_InitStruct.Pin = GPS_INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPS_INT_GPIO_Port, &GPIO_InitStruct);
 
 }
 
@@ -1568,13 +1498,26 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 void Start_IMU_Task(void *argument)
 {
   /* USER CODE BEGIN 5 */
-	static uint32_t curTick;
-	  //HAL_TIM_Base_Start_IT(&htim6);
-	  //HAL_TIM_Base_Start(&htim2);
+	//static uint32_t curTick;
+	  HAL_TIM_Base_Start_IT(&htim6);
+	  HAL_TIM_Base_Start(&htim2);
   /* Infinite loop */
   for(;;)
   {
-	  if(osKernelGetTickCount() - curTick > 1000){
+	  		  //strSize = sprintf((char*)strBuffer, "Orientation: %f %f %f\r\n", eulerAngles.angle.yaw - 29.85, eulerAngles.angle.pitch + 0.06, eulerAngles.angle.roll - 177.9);
+	  		  //HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
+
+	  		  //printf("Orientation: %.4f %.4f %.4f\r\n", eulerAngles.angle.yaw, eulerAngles.angle.pitch, eulerAngles.angle.roll);
+	    	//updateIMU = true;
+	  		  printf("IMURateFreq: %f\r\n", IMURateFreq);
+
+	   // if(updateIMU){
+	  	 // updateIMU = false;
+
+
+	    //}
+
+	  /*if(osKernelGetTickCount() - curTick > 1000){
 		  curTick = osKernelGetTickCount();
 
 		  /*strSize = sprintf((char*)strBuffer, "accX: %f\taccY: %f\taccZ: %f\r\n", accX, accY, accZ);
@@ -1590,8 +1533,8 @@ void Start_IMU_Task(void *argument)
 		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
 
 		 strSize = sprintf((char*)strBuffer, "Frame Rate Frequency: %f\r\n", IMURateFreq);
-		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);*/
-	  }
+		 HAL_UART_Transmit(&SERIAL_DEBUG, strBuffer, strSize, HAL_MAX_DELAY);
+	  }*/
 
 	 /* if(updateIMU){
 		  updateIMU = false;
@@ -1654,7 +1597,7 @@ void Start_IMU_Task(void *argument)
 		  strSize = sprintf((char*)strBuffer, "CH1: %d\tCH2: %d\tCH3: %d\tCH4: %d\tCH5: %d\tCH6: %d\r\n", PPMOutput[0], PPMOutput[1], PPMOutput[2], PPMOutput[3], PPMOutput[4], PPMOutput[5]);
 		  //HAL_UART_Transmit_DMA(&SERIAL_DEBUG, strBuffer, strSize);
 	  }*/
-    osDelay(1000);
+    osDelay(10);
   }
   /* USER CODE END 5 */
 }
@@ -1725,6 +1668,119 @@ void Start_PrintSerial_Task(void *argument)
   /* USER CODE END Start_PrintSerial_Task */
 }
 
+/* USER CODE BEGIN Header_Start_BMP_Task */
+/**
+* @brief Function implementing the BMP_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Start_BMP_Task */
+void Start_BMP_Task(void *argument)
+{
+  /* USER CODE BEGIN Start_BMP_Task */
+    struct bmp2_status status;
+    struct bmp2_data comp_data;
+    struct bmp2_dev dev;
+    struct bmp2_config conf, test;
+    int8_t rslt = BMP2_E_NULL_PTR;
+    Kalman_t altitude_kalman;
+
+	uint32_t meas_time;
+
+	    /* Interface selection is to be updated as parameter
+	     * For I2C :  BMP2_I2C_INTF
+	     * For SPI :  BMP2_SPI_INTF
+	     */
+	  rslt = bmp2_interface_selection(&dev, BMP2_SPI_INTF);
+	  bmp2_error_codes_print_result("bmp2_interface_selection", rslt);
+
+	  rslt = bmp2_init(&dev);
+	  bmp2_error_codes_print_result("bmp2_init", rslt);
+
+	    /* Always read the current settings before writing, especially when all the configuration is not modified */
+	  rslt = bmp2_get_config(&conf, &dev);
+	  bmp2_error_codes_print_result("bmp2_get_config", rslt);
+
+	    /* Configuring the over-sampling mode, filter coefficient and output data rate */
+	    /* Overwrite the desired settings */
+	  conf.filter = BMP2_FILTER_OFF;
+
+	    /* Over-sampling mode is set as high resolution i.e., os_pres = 8x and os_temp = 1x */
+	  conf.os_mode = BMP2_OS_MODE_CUSTOM;
+
+	    /* Setting the output data rate */
+	  conf.odr = BMP2_ODR_0_5_MS;
+
+	  rslt = bmp2_set_config(&conf, &dev);
+	  bmp2_error_codes_print_result("bmp2_set_config", rslt);
+
+	    /* Set normal power mode */
+	  rslt = bmp2_set_power_mode(BMP2_POWERMODE_NORMAL, &conf, &dev);
+	  bmp2_error_codes_print_result("bmp2_set_power_mode", rslt);
+
+	    /* Calculate measurement time in microseconds */
+	  rslt = bmp2_compute_meas_time(&meas_time, &conf, &dev);
+	  bmp2_error_codes_print_result("bmp2_compute_meas_time", rslt);
+
+	    /* Read pressure and temperature data */
+	  rslt = get_data(meas_time, &conf, &dev);
+	  bmp2_error_codes_print_result("get_data", rslt);
+
+	  rslt = bmp2_get_config(&test, &dev);
+	  bmp2_error_codes_print_result("bmp2_get_config", rslt);
+
+	  printf("os_temp: %d\r\n", test.os_temp);
+	  printf("os_pres: %d\r\n", test.os_pres);
+	  printf("filter: %d\r\n", test.filter);
+	  printf("odr: %d\r\n", test.odr);
+	  printf("powermode: %d\r\n", dev.power_mode);
+
+	  HAL_SPI_DeInit(&hspi1);
+	  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+	  if(HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
+
+	   rslt = bmp2_get_status(&status, &dev);
+	   bmp2_error_codes_print_result("bmp2_get_status", rslt);
+	   uint32_t nData = 0;
+	   static double tmpCalPres;
+
+	  while(nData < 100){
+		   rslt = bmp2_get_status(&status, &dev);
+		   bmp2_error_codes_print_result("bmp2_get_status", rslt);
+
+		   if(status.measuring == BMP2_MEAS_DONE){
+				  rslt = bmp2_get_sensor_data(&comp_data, &dev);
+				  bmp2_error_codes_print_result("bmp2_get_sensor_data", rslt);
+				  comp_data.pressure /= 100.0;
+				  tmpCalPres += comp_data.pressure;
+				  nData++;
+		   }
+	  }
+
+	  double calPres = tmpCalPres / 100.0;
+	  kalman_init(&altitude_kalman, 0.12, 0.12, 44330.0 * (1.0 - pow(comp_data.pressure / calPres, 0.1903)));
+
+  /* Infinite loop */
+  for(;;)
+  {
+    rslt = bmp2_get_status(&status, &dev);
+    bmp2_error_codes_print_result("bmp2_get_status", rslt);
+
+    if(status.measuring == BMP2_MEAS_DONE){
+    	rslt = bmp2_get_sensor_data(&comp_data, &dev);
+    	bmp2_error_codes_print_result("bmp2_get_sensor_data", rslt);
+    	if(rslt == BMP2_OK){
+        	comp_data.pressure /= 100.0;
+        	double altitude = 44330.0 * (1.0 - pow(comp_data.pressure / calPres, 0.1903));
+        	double estimated_altitude = kalman_updateEstimate(&altitude_kalman, altitude);
+        	//printf("%.4f\t%.4f\r\n", altitude, estimated_altitude);
+    	}
+    }
+    osDelay(1);
+  }
+  /* USER CODE END Start_BMP_Task */
+}
+
  /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM7 interrupt took place, inside
@@ -1743,14 +1799,62 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   /* USER CODE BEGIN Callback 1 */
   if(htim->Instance == TIM6){
-    if(MPU9250_getDrdyStatus(&mpu9250)){
-    	MPU9250_readSensor(&mpu9250);
-    	cntPrev = cntNow;
-    	cntNow = __HAL_TIM_GET_COUNTER(&htim2);
-    	delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
-    	IMURateFreq = (1.0f / delta);
-    	updateIMU = true;
-  	}
+	  if(MPU9250_getDrdyStatus(&mpu9250)){
+	  	    	MPU9250_readSensor(&mpu9250);
+	  	    	cntPrev = cntNow;
+	  	    	cntNow = __HAL_TIM_GET_COUNTER(&htim2);
+	  	    	delta = ((float)cntNow - (float)cntPrev) / (1000000.0f);
+	  	    	IMURateFreq = (1.0f / delta);
+
+	  	  		  accX = MPU9250_getAccelX_g(&mpu9250);
+	  	  		  accY = MPU9250_getAccelY_g(&mpu9250);
+	  	  		  accZ = MPU9250_getAccelZ_g(&mpu9250);
+
+	  	  		  //gyrX = MPU9250_getGyroX_rads(&mpu9250);
+	  	  		  //gyrY = MPU9250_getGyroY_rads(&mpu9250);
+	  	  		  //gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
+
+	  	  		  gyrX = MPU9250_getGyroX_rads(&mpu9250);
+	  	  		  gyrY = MPU9250_getGyroY_rads(&mpu9250);
+	  	  		  gyrZ = MPU9250_getGyroZ_rads(&mpu9250);
+
+	  	  		  magX = MPU9250_getMagX_uT(&mpu9250);
+	  	  		  magY = MPU9250_getMagY_uT(&mpu9250);
+	  	  		  magZ = MPU9250_getMagZ_uT(&mpu9250);
+
+	  	  		  MadgwickQuaternionUpdate(accX, accY, accZ, gyrX, gyrY, gyrZ, magX, magY, magZ, (float)delta);
+	  	  		  getQ(quaternion);
+
+	  	  		  eulerAngles.angle.yaw   = atan2(2.0f * (*(quaternion+1) * *(quaternion+2) + *quaternion
+	  	  						* *(quaternion+3)), *quaternion * *quaternion + *(quaternion+1)
+	  	  						* *(quaternion+1) - *(quaternion+2) * *(quaternion+2) - *(quaternion+3)
+	  	  						* *(quaternion+3));
+	  	  		  eulerAngles.angle.pitch = -asin(2.0f * (*(quaternion+1) * *(quaternion+3) - *quaternion
+	  	  						* *(quaternion+2)));
+	  	  		  eulerAngles.angle.roll  = atan2(2.0f * (*quaternion * *(quaternion+1) + *(quaternion+2)
+	  	  						* *(quaternion+3)), *quaternion * *quaternion - *(quaternion+1)
+	  	  						* *(quaternion+1) - *(quaternion+2) * *(quaternion+2) + *(quaternion+3)
+	  	  						* *(quaternion+3));
+	  	  		  eulerAngles.angle.pitch *= RAD_TO_DEG;
+	  	  		  eulerAngles.angle.yaw   *= RAD_TO_DEG;
+	  	  		  //euler.yaw  -= 8.5;
+	  	  		  eulerAngles.angle.yaw -= 0.81;
+	  	  		  eulerAngles.angle.roll *= RAD_TO_DEG;
+	  	  		  accel.axis.x = accX;
+	  	  		  accel.axis.y = accY;
+	  	  		  accel.axis.z = accZ;
+
+	  	  		  gyro.axis.x = gyrX * RAD_TO_DEG;
+	  	  		  gyro.axis.y = gyrY * RAD_TO_DEG;
+	  	  		  gyro.axis.z = gyrZ * RAD_TO_DEG;
+
+	  	  		  magnet.axis.x = magX;
+	  	  		  magnet.axis.y = magY;
+	  	  		  magnet.axis.z = magZ;
+
+	  	  		  FusionAhrsUpdate(&fusionahrs, gyro, accel,  magnet, delta);
+	  	  		  eulerAngles = FusionQuaternionToEulerAngles(FusionAhrsGetQuaternion(&fusionahrs));
+	  }
   }
   /* USER CODE END Callback 1 */
 }

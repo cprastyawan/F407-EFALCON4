@@ -248,6 +248,7 @@ extern SPI_HandleTypeDef hspi1;
 #define BMP2_OS_MODE_STANDARD_RESOLUTION              UINT8_C(0x02)
 #define BMP2_OS_MODE_HIGH_RESOLUTION                  UINT8_C(0x03)
 #define BMP2_OS_MODE_ULTRA_HIGH_RESOLUTION            UINT8_C(0x04)
+#define BMP2_OS_MODE_CUSTOM							  UINT8_C(0x05)
 
 /*! @name Filter coefficient macros */
 #define BMP2_FILTER_OFF                               UINT8_C(0x00)

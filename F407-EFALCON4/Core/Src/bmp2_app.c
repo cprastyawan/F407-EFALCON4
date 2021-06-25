@@ -6,6 +6,7 @@
  */
 
 #include "bmp2_app.h"
+#include <string.h>
 
 static uint8_t dev_addr;
 
@@ -64,9 +65,14 @@ BMP2_INTF_RET_TYPE bmp2_spi_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t l
  * @retval Non-zero for Failure
  */
 BMP2_INTF_RET_TYPE bmp2_spi_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr){
+	uint8_t transmit_data[1 + length];
+	transmit_data[0] = reg_addr;
+	memcpy(&transmit_data[1], reg_data, length);
+
 	HAL_StatusTypeDef status;
 	ACTIVATE_SPI(BMP_CS_GPIO_Port, BMP_CS_Pin);
-	status = HAL_SPI_Transmit(&hspi1, (uint8_t*)reg_data, length, HAL_MAX_DELAY);
+	//status = HAL_SPI_Transmit(&hspi1, &reg_addr, 1, HAL_MAX_DELAY);
+	status = HAL_SPI_Transmit(&hspi1, (uint8_t*)transmit_data, length + 1, HAL_MAX_DELAY);
 	DEACTIVATE_SPI(BMP_CS_GPIO_Port, BMP_CS_Pin);
 	if(status == HAL_OK) return 0;
 	else return 1;

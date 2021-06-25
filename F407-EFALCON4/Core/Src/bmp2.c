@@ -54,7 +54,6 @@
  * @retval 0 -> Success
  * @retval <0 -> Fail
  */
-
 static int8_t null_ptr_check(const struct bmp2_dev *dev);
 
 /*!
@@ -719,6 +718,9 @@ static void set_os_mode(uint8_t *reg_data, const struct bmp2_config *conf)
             reg_data[0] = BMP2_SET_BITS(reg_data[0], BMP2_OS_TEMP, BMP2_OS_2X);
             reg_data[0] = BMP2_SET_BITS(reg_data[0], BMP2_OS_PRES, BMP2_OS_16X);
             break;
+        case BMP2_OS_MODE_CUSTOM:
+            reg_data[0] = BMP2_SET_BITS(reg_data[0], BMP2_OS_TEMP, BMP2_OS_2X);
+            reg_data[0] = BMP2_SET_BITS(reg_data[0], BMP2_OS_PRES, BMP2_OS_16X);
         default:
             break;
     }
